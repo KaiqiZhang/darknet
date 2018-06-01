@@ -87,6 +87,8 @@ __global__ void complex_mul_kernel(int n, cufftComplex *b, cufftComplex *zweight
 
   for (int k = 0; k < block_size_half; k++)
   {
+    //output_ptr->x = im_ptr->x * weight_ptr->x - im_ptr->y * weight_ptr->y;
+    //output_ptr->y = im_ptr->x * weight_ptr->y + im_ptr->y * weight_ptr->x;
     output_ptr->x = im_ptr->x * weight_ptr->x - im_ptr->y * weight_ptr->y;
     output_ptr->y = im_ptr->x * weight_ptr->y + im_ptr->y * weight_ptr->x;
 
