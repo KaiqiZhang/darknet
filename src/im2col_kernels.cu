@@ -9,7 +9,7 @@ extern "C" {
 
 // src: https://github.com/BVLC/caffe/blob/master/src/caffe/util/im2col.cu
 // You may also want to read: https://github.com/BVLC/caffe/blob/master/LICENSE
-
+// change to NHWC format
 __global__ void im2col_gpu_kernel(const int n, const float* data_im,
         const int height, const int width, const int ksize,
         const int pad,
@@ -22,7 +22,9 @@ __global__ void im2col_gpu_kernel(const int n, const float* data_im,
         int h_index = index / width_col;
         int h_out = h_index % height_col;
         int channel_in = h_index / height_col;
-        int channel_out = channel_in * ksize * ksize;
+        int channel_num = n / width_col / height_col;
+        //int channel_out = channel_in * ksize * ksize;
+        int channel_out = channel_in;
         int h_in = h_out * stride - pad;
         int w_in = w_out * stride - pad;
         float* data_col_ptr = data_col;
@@ -39,7 +41,8 @@ __global__ void im2col_gpu_kernel(const int n, const float* data_im,
 
                 //*data_col_ptr = data_im_ptr[ii * width + jj];
 
-                data_col_ptr += height_col * width_col;
+                //data_col_ptr += height_col * width_col;
+                data_col_ptr += height_col * width_col * channel_num;
             }
         }
     }

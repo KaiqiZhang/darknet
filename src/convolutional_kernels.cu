@@ -1,6 +1,7 @@
 #include "cuda_runtime.h"
 #include "curand.h"
 #include "cublas_v2.h"
+#include "cufft.h"
 
 extern "C" {
 #include "convolutional_layer.h"
@@ -70,6 +71,31 @@ void binarize_weights_gpu(float *weights, int n, int size, float *binary)
     check_error(cudaPeekAtLastError());
 }
 
+__global__ void complex_mul_kernel(int n, cufftComplex *b, cufftComplex *zweights, cufftComplex *output,
+                                  int block_row, int block_col, int block_size_half, int out_h, int out_w)
+{
+  int i = (blockIdx.x + blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+
+  // calculate one block element-wise multiplication
+  int col = i % (out_h * out_w * block_row);
+  int row = i / block_col % (out_h * out_w);
+  int pixel = i / block_row / block_col;
+  cufftComplex *im_ptr = b + pixel * block_col * block_size_half + col * block_size_half;
+  cufftComplex *weight_ptr = zweights + row * block_col * block_size_half + col * block_size_half;
+  cufftComplex *output_ptr = output + pixel * block_row * block_col * block_size_half + row * block_col * block_size_half + col * block_size_half;
+
+  for (int k = 0; k < block_size_half; k++)
+  {
+    output_ptr->x = im_ptr->x * weight_ptr->x - im_ptr->y * weight_ptr->y;
+    output_ptr->y = im_ptr->x * weight_ptr->y + im_ptr->y * weight_ptr->x;
+
+    im_ptr++;
+    weight_ptr++;
+    output_ptr++;
+  }
+}
+
 void forward_convolutional_layer_gpu(convolutional_layer l, network net)
 {
     fill_gpu(l.outputs*l.batch, 0, l.output_gpu, 1);
@@ -118,7 +144,30 @@ void forward_convolutional_layer_gpu(convolutional_layer l, network net)
             } else {
                 im2col_gpu(im, l.c/l.groups, l.h, l.w, l.size, l.stride, l.pad, b);
             }
-            gemm_gpu(0,0,m,n,k,1,a,k,b,n,1,c,n);
+            //im2col_transpose_gpu();
+
+            //gemm_gpu(0,0,m,n,k,1,a,k,b,n,1,c,n);
+            // group not considered !!!
+
+            // transpose b?
+            cufftExecR2C(l.fft_b_plan, (cufftReal *)b, l.fft_b_gpu);
+            check_error(cudaPeekAtLastError());
+
+            int n = l.out_h*l.out_w*l.block_col*l.block_row;
+            complex_mul_kernel<<<cuda_gridsize(n), BLOCK>>>(n, l.fft_b_gpu, l.fft_zweights_gpu, l.fft_output_mul_gpu,
+                                                       l.block_row, l.block_col, l.block_size_half, l.out_h, l.out_w);
+            check_error(cudaPeekAtLastError());
+
+            cufftExecC2R(l.ifft_plan, l.fft_output_gather_gpu, (cufftReal *)c);
+            check_error(cudaPeekAtLastError());
+
+            // transpose output
+            const float one = 1;
+	          const float zero = 0;
+            cublasSgeam(0, CUBLAS_OP_T, CUBLAS_OP_T, l.block_col*l.block_size, n, &one, c, n, &zero, c, n, c, l.block_col*l.block_size);
+            check_error(cudaPeekAtLastError());
+
+            //invert<<<>>>(l.fft_output_gpu, l.output_gpu, c, m*n);  // add & transpose & complex2real
         }
     }
 #endif
@@ -326,5 +375,3 @@ void update_convolutional_layer_gpu(layer l, update_args a)
         constrain_gpu(l.nweights, l.clip, l.weights_gpu, 1);
     }
 }
-
-

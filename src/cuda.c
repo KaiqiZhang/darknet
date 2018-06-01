@@ -3,6 +3,7 @@ int gpu_index = 0;
 #ifdef GPU
 
 #include "cuda.h"
+#include "cufft.h"
 #include "utils.h"
 #include "blas.h"
 #include <assert.h>
@@ -29,23 +30,23 @@ void check_error(cudaError_t status)
     //cudaDeviceSynchronize();
     cudaError_t status2 = cudaGetLastError();
     if (status != cudaSuccess)
-    {   
+    {
         const char *s = cudaGetErrorString(status);
         char buffer[256];
         printf("CUDA Error: %s\n", s);
         assert(0);
         snprintf(buffer, 256, "CUDA Error: %s", s);
         error(buffer);
-    } 
+    }
     if (status2 != cudaSuccess)
-    {   
+    {
         const char *s = cudaGetErrorString(status);
         char buffer[256];
         printf("CUDA Error Prev: %s\n", s);
         assert(0);
         snprintf(buffer, 256, "CUDA Error Prev: %s", s);
         error(buffer);
-    } 
+    }
 }
 
 dim3 cuda_gridsize(size_t n){
@@ -101,6 +102,30 @@ float *cuda_make_array(float *x, size_t n)
     }
     if(!x_gpu) error("Cuda malloc failed\n");
     return x_gpu;
+}
+
+cufftComplex *cuda_make_complex_array(size_t n)
+{
+  cufftComplex *x_gpu;
+  size_t size = sizeof(cufftComplex)*n;
+  cudaError_t status = cudaMalloc((void **)&x_gpu, size);
+  check_error(status);
+  if(!x_gpu) error("Cuda malloc failed\n");
+  return x_gpu;
+}
+
+void cuda_make_cufft_plan(cufftHandle *plan, int type, size_t n, size_t batch)
+{
+  cufftType cufft_type = CUFFT_C2C;
+  if (type == 0)
+    cufft_type = CUFFT_C2C;
+  else if (type == 1)
+    cufft_type = CUFFT_R2C;
+  else if (type == 2)
+    cufft_type = CUFFT_C2R;
+
+  cudaError_t status = cufftPlan1d(plan, n, cufft_type, batch);
+  check_error(status);
 }
 
 void cuda_random(float *x_gpu, size_t n)

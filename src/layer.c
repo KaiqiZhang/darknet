@@ -31,6 +31,7 @@ void free_layer(layer l)
     if(l.bias_updates)       free(l.bias_updates);
     if(l.scales)             free(l.scales);
     if(l.scale_updates)      free(l.scale_updates);
+    if(l.zweights)           free(l.zweights);
     if(l.weights)            free(l.weights);
     if(l.weight_updates)     free(l.weight_updates);
     if(l.delta)              free(l.delta);

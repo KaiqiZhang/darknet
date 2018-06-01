@@ -14,6 +14,7 @@ extern int gpu_index;
     #include "cuda_runtime.h"
     #include "curand.h"
     #include "cublas_v2.h"
+    #include "cufft.h"
 
     #ifdef CUDNN
     #include "cudnn.h"
@@ -125,6 +126,25 @@ struct layer{
     void (*forward_gpu)   (struct layer, struct network);
     void (*backward_gpu)  (struct layer, struct network);
     void (*update_gpu)    (struct layer, update_args);
+    // for cir-cnn
+    int block_size;
+    int block_size_half;
+    int block_row;
+    int block_col;
+    int block_num; // = block_row * block_col
+    int nzweights;  // = (n * block_col) -> (block_size * block_row * block_col)
+    float * zweights;
+#ifdef GPU
+    float * zweights_gpu;
+    cufftComplex * fft_zweights_gpu;
+    cufftComplex * fft_b_gpu;
+    cufftComplex * fft_output_mul_gpu;
+    cufftComplex * fft_output_gather_gpu;
+    cufftHandle fft_zweights_plan;
+    cufftHandle fft_b_plan;
+    cufftHandle ifft_plan;
+#endif
+    //
     int batch_normalize;
     int shortcut;
     int batch;
@@ -258,7 +278,7 @@ struct layer{
 
     float * m;
     float * v;
-    
+
     float * bias_m;
     float * bias_v;
     float * scale_m;
@@ -283,7 +303,7 @@ struct layer{
     float *g_cpu;
     float *o_cpu;
     float *c_cpu;
-    float *dc_cpu; 
+    float *dc_cpu;
 
     float * binary_input;
 
@@ -310,7 +330,7 @@ struct layer{
 
     struct layer *input_h_layer;
     struct layer *state_h_layer;
-	
+
     struct layer *wz;
     struct layer *uz;
     struct layer *wr;
@@ -350,7 +370,7 @@ struct layer{
     float *g_gpu;
     float *o_gpu;
     float *c_gpu;
-    float *dc_gpu; 
+    float *dc_gpu;
 
     float *m_gpu;
     float *v_gpu;
@@ -631,6 +651,8 @@ void copy_gpu(int N, float * X, int INCX, float * Y, int INCY);
 void cuda_set_device(int n);
 void cuda_free(float *x_gpu);
 float *cuda_make_array(float *x, size_t n);
+cufftComplex *cuda_make_complex_array(size_t n);
+void cuda_make_cufft_plan(cufftHandle *plan, int type, size_t n, size_t batch);
 void cuda_pull_array(float *x_gpu, float *x, size_t n);
 float cuda_mag_array(float *x_gpu, size_t n);
 void cuda_push_array(float *x_gpu, float *x, size_t n);

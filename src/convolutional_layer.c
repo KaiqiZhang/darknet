@@ -115,22 +115,23 @@ static size_t get_workspace_size(layer l){
         return most;
     }
 #endif
-    return (size_t)l.out_h*l.out_w*l.size*l.size*l.c/l.groups*sizeof(float);
+    //return (size_t)l.out_h*l.out_w*l.size*l.size*l.c/l.groups*sizeof(float);
+    return (size_t)l.out_h*l.out_w*l.block_col*l.block_size*sizeof(float);
 }
 
 #ifdef GPU
 #ifdef CUDNN
 void cudnn_convolutional_setup(layer *l)
 {
-    cudnnSetTensor4dDescriptor(l->dsrcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->c, l->h, l->w); 
-    cudnnSetTensor4dDescriptor(l->ddstTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->out_c, l->out_h, l->out_w); 
+    cudnnSetTensor4dDescriptor(l->dsrcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->c, l->h, l->w);
+    cudnnSetTensor4dDescriptor(l->ddstTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->out_c, l->out_h, l->out_w);
 
-    cudnnSetTensor4dDescriptor(l->srcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->c, l->h, l->w); 
-    cudnnSetTensor4dDescriptor(l->dstTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->out_c, l->out_h, l->out_w); 
-    cudnnSetTensor4dDescriptor(l->normTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, l->out_c, 1, 1); 
+    cudnnSetTensor4dDescriptor(l->srcTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->c, l->h, l->w);
+    cudnnSetTensor4dDescriptor(l->dstTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, l->batch, l->out_c, l->out_h, l->out_w);
+    cudnnSetTensor4dDescriptor(l->normTensorDesc, CUDNN_TENSOR_NCHW, CUDNN_DATA_FLOAT, 1, l->out_c, 1, 1);
 
-    cudnnSetFilter4dDescriptor(l->dweightDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, l->n, l->c/l->groups, l->size, l->size); 
-    cudnnSetFilter4dDescriptor(l->weightDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, l->n, l->c/l->groups, l->size, l->size); 
+    cudnnSetFilter4dDescriptor(l->dweightDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, l->n, l->c/l->groups, l->size, l->size);
+    cudnnSetFilter4dDescriptor(l->weightDesc, CUDNN_DATA_FLOAT, CUDNN_TENSOR_NCHW, l->n, l->c/l->groups, l->size, l->size);
     #if CUDNN_MAJOR >= 6
     cudnnSetConvolution2dDescriptor(l->convDesc, l->pad, l->pad, l->stride, l->stride, 1, 1, CUDNN_CROSS_CORRELATION, CUDNN_DATA_FLOAT);
     #else
@@ -173,7 +174,7 @@ void cudnn_convolutional_setup(layer *l)
 #endif
 #endif
 
-convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int n, int groups, int size, int stride, int padding, ACTIVATION activation, int batch_normalize, int binary, int xnor, int adam)
+convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int n, int groups, int size, int stride, int padding, int block_size, ACTIVATION activation, int batch_normalize, int binary, int xnor, int adam)
 {
     int i;
     convolutional_layer l = {0};
@@ -191,6 +192,14 @@ convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int
     l.size = size;
     l.pad = padding;
     l.batch_normalize = batch_normalize;
+
+    l.block_size = block_size;
+    l.block_size_half = block_size / 2 + 1;
+    l.block_col = (c/groups<block_size ? 1 : c/groups/block_size) * size * size;  // NHWC format
+    l.block_row = n%block_size==0 ? n/block_size : n/block_size+1;
+    l.block_num = l.block_col * l.block_row;
+    l.nzweights =  l.block_size * l.block_num;
+    l.zweights = calloc(l.nzweights, sizeof(float));
 
     l.weights = calloc(c/groups*n*size*size, sizeof(float));
     l.weight_updates = calloc(c/groups*n*size*size, sizeof(float));
@@ -273,6 +282,16 @@ convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int
             l.scale_v_gpu = cuda_make_array(l.scale_v, n);
         }
 
+        l.zweights_gpu = cuda_make_array(l.zweights, l.nzweights);
+        // group not considered !!!
+        l.fft_zweights_gpu = cuda_make_complex_array(l.block_col * l.block_row * l.block_size_half);
+        l.fft_b_gpu = cuda_make_complex_array(l.out_h*l.out_w*l.block_col*l.block_size_half);
+        l.fft_output_mul_gpu = cuda_make_complex_array(l.block_size_half*l.block_row*l.out_h*l.out_w*l.block_col);
+        l.fft_output_gather_gpu = cuda_make_complex_array(l.block_size_half*l.block_row*l.out_h*l.out_w);
+        //l.fft_zweights_plan
+        cuda_make_cufft_plan(&l.fft_b_plan, 1, l.block_size, l.out_h*l.out_w*l.block_col);
+        cuda_make_cufft_plan(&l.ifft_plan, 2, l.block_size, l.out_h*l.out_w*l.block_row);
+
         l.weights_gpu = cuda_make_array(l.weights, l.nweights);
         l.weight_updates_gpu = cuda_make_array(l.weight_updates, l.nweights);
 
@@ -280,7 +299,8 @@ convolutional_layer make_convolutional_layer(int batch, int h, int w, int c, int
         l.bias_updates_gpu = cuda_make_array(l.bias_updates, n);
 
         l.delta_gpu = cuda_make_array(l.delta, l.batch*out_h*out_w*n);
-        l.output_gpu = cuda_make_array(l.output, l.batch*out_h*out_w*n);
+        //l.output_gpu = cuda_make_array(l.output, l.batch*out_h*out_w*n);
+        l.output_gpu = cuda_make_array(l.output, l.batch*out_h*out_w*l.block_row*l.block_size);  // !!!
 
         if(binary){
             l.binary_weights_gpu = cuda_make_array(l.weights, l.nweights);
@@ -511,7 +531,7 @@ void backward_convolutional_layer(convolutional_layer l, network net)
             if(l.size == 1){
                 b = im;
             } else {
-                im2col_cpu(im, l.c/l.groups, l.h, l.w, 
+                im2col_cpu(im, l.c/l.groups, l.h, l.w,
                         l.size, l.stride, l.pad, b);
             }
 
@@ -620,3 +640,47 @@ image *visualize_convolutional_layer(convolutional_layer l, char *window, image 
     return single_weights;
 }
 
+void reorder_convolutional_weights(convolutional_layer l)
+{
+  if (l.n % l.block_size == 0) return;
+
+  int last_line_size = l.n % l.block_size;
+  int j = l.nzweights;
+  int i = (l.block_row - 1) * l.block_size * l.block_col + last_line_size * l.block_col - 1;
+  for (; i >= (l.block_row - 1) * l.block_size * l.block_col; i--)
+  {
+    if (j % l.block_size == 0)
+    {
+      for (int cnt = 0; cnt < l.block_size - last_line_size; cnt++)
+        l.zweights[--j] = 0;
+    }
+
+    l.zweights[--j] = l.zweights[i];
+  }
+}
+
+void decompress_convolutional_weights(convolutional_layer l)
+{
+  for (int i = 0; i < l.nweights; i++)
+  {
+    int x = i % (l.c/l.groups * l.size * l.size);
+    int y = i / (l.c/l.groups * l.size * l.size);
+    int k = x / (l.c/l.groups);
+    int ink_x = x % (l.c/l.groups);
+    int ink_block_x = ink_x / l.block_size;
+    int block_y = y / l.block_size;
+    int ink_block_col = l.c/l.groups < l.block_size ? 1 : l.c/l.groups / l.block_size;
+    int ink_block_id = ink_block_x + block_y * ink_block_col;
+
+    int k_start = l.block_row * ink_block_col * l.block_size * k;
+    int ink_start = ink_block_id * l.block_size;
+
+    int inblock_x = ink_x % l.block_size;//x % (l.c/l.groups < l.block_size ? l.c/l.groups : l.block_size);
+    int inblock_y = y % l.block_size;
+
+    int offset = (inblock_y + l.block_size -  inblock_x) % l.block_size;
+    int index = k_start + ink_start + offset;
+
+    l.weights[i] = l.zweights[index];
+  }
+}
